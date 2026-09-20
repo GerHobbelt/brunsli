@@ -1058,8 +1058,8 @@ static BrunsliStatus ReadTag(State* state, SectionState* section) {
 
   const uint32_t tag_bit = 1u << tag;
   if (section->tags_met & tag_bit) {
-    BRUNSLI_LOG_ERROR() << "Duplicate marker " << std::hex
-                        << static_cast<int>(marker) << BRUNSLI_ENDL();
+    BRUNSLI_LOG_ERROR() << "Duplicate marker " << ToHexString(marker)
+                        << BRUNSLI_ENDL();
     return BRUNSLI_INVALID_BRN;
   }
   section->tags_met |= tag_bit;
@@ -1146,7 +1146,7 @@ Stage DecodeHeader(State* state, JPEGData* jpg) {
         const uint32_t tag_bit = 1u << hs.section.tag;
         if (hs.section.is_section) {
           if (kKnownHeaderVarintTags & tag_bit) {
-            Fail(state, BRUNSLI_INVALID_BRN);
+            return Fail(state, BRUNSLI_INVALID_BRN);
           }
           hs.stage = HeaderState::ITEM_ENTER_SECTION;
           break;
@@ -1312,9 +1312,11 @@ static BrunsliStatus DecodeMetaDataSection(State* state, JPEGData* jpg) {
   if (ms.decompression_stage == MetadataDecompressionStage::READ_LENGTH) {
     BrunsliStatus status = DecodeBase128(state, &ms.metadata_size);
     if (status != BRUNSLI_OK) return status;
-    // TODO(eustas): ms.metadata_size should be limited to avoid "zip-bombs".
     if (IsOutOfSectionBounds(state)) return BRUNSLI_INVALID_BRN;
     if (RemainingSectionLength(state) == 0) return BRUNSLI_INVALID_BRN;
+    if (ms.metadata_size > ms.metadata_size_limit) {
+      return BRUNSLI_NON_REPRESENTABLE;
+    }
     if (!s.shallow_metadata) {
       ms.brotli = BrotliDecoderCreateInstance(nullptr, nullptr, nullptr);
       if (ms.brotli == nullptr) return BRUNSLI_DECOMPRESSION_ERROR;
@@ -2487,16 +2489,22 @@ BrunsliStatus ProcessJpeg(State* state, JPEGData* jpg) {
 }  // namespace internal
 
 BrunsliStatus BrunsliDecodeJpeg(const uint8_t* data, const size_t len,
-                                JPEGData* jpg) {
+                                JPEGData* jpg, BrunsliDecodeOptions options) {
   if (!data) return BRUNSLI_INVALID_PARAM;
 
   State state;
+  state.ApplyOptions(options);
   state.data = data;
   state.len = len;
   state.internal->fallback.policy =
       internal::dec::FallbackState::Policy::BORROW;
 
   return internal::dec::ProcessJpeg(&state, jpg);
+}
+
+BrunsliStatus BrunsliDecodeJpeg(const uint8_t* data, size_t len,
+                                JPEGData* jpg) {
+  return BrunsliDecodeJpeg(data, len, jpg, BrunsliDecodeOptions());
 }
 
 size_t BrunsliEstimateDecoderPeakMemoryUsage(const uint8_t* data,
@@ -2548,9 +2556,10 @@ size_t BrunsliEstimateDecoderPeakMemoryUsage(const uint8_t* data,
   return (out_size + jpeg_data_size + std::max(decode_peak, jpeg_writer_size));
 }
 
-BrunsliDecoder::BrunsliDecoder() {
+BrunsliDecoder::BrunsliDecoder(BrunsliDecodeOptions options) {
   jpg_.reset(new JPEGData);
   state_.reset(new State);
+  state_->ApplyOptions(options);
 }
 
 BrunsliDecoder::~BrunsliDecoder() {}
